@@ -15,8 +15,6 @@
 8. The Training Pipeline, Step by Step
 9. Evaluation and Results
 10. Visualization Modules
-11. Troubleshooting Common Errors
-12. Quick Reference: All Functions
 
 ---
 
@@ -463,31 +461,7 @@ This produces a more comprehensive 12-panel figure organized in a 3-row, 4-colum
 
 ---
 
-## 11. Troubleshooting Common Errors
-
-### "google.colab not found"
-
-You are running the code outside Colab. The file upload functionality will not work. Either run in Colab or manually place your dataset in the `Training` directory and comment out the `setup_dataset()` call.
-
-### "Directory 'Training' not found"
-
-The zip file structure does not match what the code expects. Open the zip and verify it contains either a `Training` folder or numbered folders `0` through `4` at the root level.
-
-### "Could not plot model architecture (Graphviz/Pydot may be missing)"
-
-The `plot_model_architecture` function requires Graphviz. Install it in Colab by running `!apt-get install -y graphviz` and `!pip install pydot` in a code cell before calling `main()`.
-
-### Training is extremely slow
-
-Verify that you have enabled GPU in Runtime > Change runtime type. Also check that the batch size of 16 is appropriate for your GPU memory. If you get out-of-memory errors, reduce `BATCH_SIZE` in the `main()` function.
-
-### Model loads with errors mentioning custom layers
-
-The custom attention functions (`apply_sobel`, `split_features`, `global_mean_pool`, `global_max_pool`) are decorated with `@keras.utils.register_keras_serializable()`. This is necessary for them to survive model serialization and deserialization. If you modify the code or run it across sessions, ensure these decorators are present before loading `best_model.h5`.
-
----
-
-## 12. Quick Reference: All Functions
+## NOTE: Quick Reference: All Functions
 
 | Function | What It Does |
 |---|---|
@@ -516,6 +490,543 @@ The custom attention functions (`apply_sobel`, `split_features`, `global_mean_po
 | `generate_overlay(img_path, ...)` | Blends heatmap onto original image |
 | `visualize_em_csa_internals(model, ...)` | 8-panel internal attention visualization |
 | `visualize_em_csa_dashboard(model, ...)` | 12-panel full visualization dashboard |
+
+---
+
+# EM-CSA Lung Cancer Detection System
+## A Complete Step-by-Step Guide — IQ-OTH/NCCD Dataset
+
+---
+
+## Table of Contents
+
+1. What This Project Does
+2. Prerequisites and Environment
+3. Understanding the Dataset
+4. Step-by-Step Setup and Execution on Google Colab
+5. How the Data Pipeline Works
+6. Core Terminology: Basic Level
+7. Core Terminology: Intermediate Level
+8. Core Terminology: Advanced Level — The EM-CSA Mechanism
+9. What Happens Inside `main()`: Step by Step
+10. Evaluation and Reading the Results
+11. Visualization: The 4-Panel Attention Dashboard
+12. Key Differences from the Knee Arthritis Version
+
+---
+
+## 1. What This Project Does
+
+This project trains a deep learning model to analyze lung CT scan slices and classify them into one of three categories:
+
+- **Benign** — a non-cancerous abnormality is present, but it is not malignant
+- **Malignant** — cancerous tissue is detected
+- **Normal** — no abnormality is present
+
+The dataset used is the **IQ-OTH/NCCD** (Iraqi Oncology Teaching Hospital / National Center for Cancer Diseases) lung cancer dataset, which contains CT scan slices collected from real patients.
+
+The model does not just output a classification label. After training, it also generates visual explanations for its decisions — showing exactly which regions of the CT scan influenced the prediction. This is done through the same **EM-CSA (Edge-Enhanced Multi-Scale Coordinate-Spatial Attention)** mechanism used in the knee arthritis codebase, adapted here for pulmonary imaging.
+
+A key practical feature: the code includes a **class balancing step** (oversampling) to handle the unequal distribution of Benign, Malignant, and Normal samples commonly found in medical datasets. Without this, the model would naturally learn to favor the majority class.
+
+---
+
+## 2. Prerequisites and Environment
+
+### Where to Run
+
+Run this code exclusively on **Google Colab** (colab.research.google.com). The code uses `google.colab.files` for uploading your dataset and test images, and it requires a GPU for training in a reasonable timeframe. No local Python installation or setup is required.
+
+### What You Need Before Starting
+
+- A Google account
+- The IQ-OTH/NCCD dataset downloaded as a `.zip` file (available on Kaggle)
+- No libraries to install — Colab has all dependencies pre-loaded
+
+### Libraries Used
+
+| Library | Purpose |
+|---|---|
+| `tensorflow` / `keras` | Model construction, training, and inference |
+| `numpy` | Array and matrix operations |
+| `matplotlib` | Plotting training curves, distributions, confusion matrix, visualizations |
+| `sklearn` | `train_test_split`, `confusion_matrix`, `classification_report` |
+| `opencv (cv2)` | Resizing attention maps to original image dimensions for overlay |
+| `collections.Counter` | Counting class frequencies for oversampling logic |
+
+---
+
+## 3. Understanding the Dataset
+
+### Source
+
+The IQ-OTH/NCCD dataset contains 2D CT scan slices taken from lung cancer patients and healthy controls. Each slice is a grayscale image stored as `.jpg` or `.png`.
+
+### Expected Folder Structure
+
+Your zip file should contain three subfolders, one per class. The exact folder names become your class labels automatically. A typical structure looks like:
+
+```
+dataset.zip
+└── Data/
+    ├── Benign/
+    │   ├── image001.jpg
+    │   ├── image002.jpg
+    │   └── ...
+    ├── Malignant/
+    │   ├── image001.jpg
+    │   └── ...
+    └── Normal/
+        ├── image001.jpg
+        └── ...
+```
+
+The code scans the unzipped contents to find the first directory that contains more than one subfolder and treats that as the root data directory. This means nested structures are handled automatically — you do not need to manually reorganize the zip.
+
+### How Images Are Processed
+
+All images are resized to **256 × 256 pixels** and loaded in **grayscale** (one color channel). Pixel values remain in the range [0, 255] during loading. Normalization to [0, 1] happens inside the model itself via the `Rescaling` layer.
+
+### How the Data Is Split
+
+The full dataset is split in two stages using **stratified splitting**, which preserves the original class ratios in each subset:
+
+- First split: 85% for training+validation, 15% held out as the test set
+- Second split: from the 85%, roughly 85% becomes training and 15% becomes validation
+
+Final approximate proportions: **72% training, 13% validation, 15% test**.
+
+---
+
+## 4. Step-by-Step Setup and Execution on Google Colab
+
+Follow these steps exactly, in order, without skipping any.
+
+---
+
+### Step 1: Open Google Colab
+
+Go to [colab.research.google.com](https://colab.research.google.com). Sign in with your Google account. Click **New Notebook** to create a fresh notebook.
+
+---
+
+### Step 2: Enable GPU Runtime
+
+Click **Runtime** in the top menu bar. Select **Change runtime type**. Under "Hardware accelerator", select **GPU** (T4 GPU is the free default). Click **Save**.
+
+> **Why this matters:** Training for 50 epochs with a CNN on 256×256 images takes roughly 10–30 minutes on a GPU. On a CPU it could take several hours.
+
+---
+
+### Step 3: Upload and Paste the Code
+
+Copy the entire contents of `Lungs.ipynb` into one or more cells in your Colab notebook. You can also upload the `.ipynb` file directly by going to **File > Upload Notebook**.
+
+If you are copy-pasting, paste everything into a single large code cell. All the function definitions must be present in memory before `main()` is called.
+
+---
+
+### Step 4: Install Graphviz (Optional but Recommended)
+
+The `plot_model_architecture` function requires Graphviz. Run this in a separate cell before executing the main code:
+
+```python
+!apt-get install -y graphviz
+!pip install pydot
+```
+
+If you skip this step, you will see a warning message but training will still proceed normally.
+
+---
+
+### Step 5: Run the Cell
+
+Run the code cell containing `main()`. As soon as you call `main()`:
+
+**A file upload dialog will appear.** This is Colab prompting you to upload your zip file. Click the "Choose Files" button and select your IQ-OTH/NCCD dataset zip from your local computer. The upload will begin immediately.
+
+> **Important:** Do not close the browser tab or refresh during the upload. Large zip files (the IQ-OTH/NCCD dataset is approximately 200–400MB) can take several minutes depending on your internet speed.
+
+---
+
+### Step 6: Wait for Unzipping and Dataset Detection
+
+After the upload completes, the code will:
+
+1. Unzip the contents into a folder called `lung_images/`
+2. Walk the directory tree to find the folder that contains the three class subfolders
+3. Print a message like `Using Data Directory: lung_images/Data` or similar
+
+---
+
+### Step 7: Watch the Class Detection Output
+
+The code will print something like:
+
+```
+Classes: {'Benign': 0, 'Malignant': 1, 'Normal': 2}
+```
+
+This tells you the class names were detected correctly and assigned integer indices. The alphabetical ordering is used, so Benign=0, Malignant=1, Normal=2 is the standard output for this dataset. Keep note of this mapping — it is what the confusion matrix and classification report will use.
+
+---
+
+### Step 8: Observe the Oversampling Output
+
+The training set is balanced by oversampling minority classes. You will see:
+
+```
+Balancing Training Data (Oversampling)...
+```
+
+After this, all three classes in the training set will have equal counts (equal to the count of whichever class had the most images). The validation and test sets are **not** oversampled — they retain the original distribution to give honest performance estimates.
+
+---
+
+### Step 9: Inspect the Sample Visualization
+
+A 4×5 grid of 20 CT scan samples will be displayed. Each image is shown with its class label as the title. Visually verify that:
+
+- Images look like recognizable CT scan slices (lung cross-sections)
+- All three class labels appear in the grid
+- Images are not all black, corrupted, or obviously wrong
+
+If the images look unusual (all white, random noise, etc.), there may be an issue with the image decoding. JPEG images are expected; PNG images also work. Files with `.dcm` (DICOM format) extension will not be loaded by this code.
+
+---
+
+### Step 10: Inspect the Class Distribution Chart
+
+A bar chart will display the class counts in the balanced training set. All three bars should be equal height after oversampling. The exact count on top of each bar represents how many images of that class the model will train on per epoch.
+
+---
+
+### Step 11: Review the Model Summary
+
+The model architecture summary will be printed. Key things to look for:
+
+- The total parameter count (typically in the range of 5–15 million for this architecture)
+- The presence of `em_csa_cnn_lung` as the model name
+- Layers named `attention_edge_out`, `attention_spatial_map`, and `last_conv_layer` — these names are critical for visualization later
+
+If you installed Graphviz in Step 4, a visual graph of the model layers will also be displayed as an image.
+
+---
+
+### Step 12: Watch Training Progress
+
+Training runs for **50 epochs** with a batch size of 16. After each epoch you will see a line like:
+
+```
+Epoch 12/50 — loss: 0.4821 — accuracy: 0.8213 — val_loss: 0.5102 — val_accuracy: 0.7944
+```
+
+Whenever `val_accuracy` reaches a new best, you will see:
+
+```
+Epoch 00012: val_accuracy improved from 0.78901 to 0.79440, saving model to best_lung_model.h5
+```
+
+This means the best version of the model is being saved automatically. Do not interrupt training at this point.
+
+> **Note on epochs:** 50 epochs is significantly fewer than the knee arthritis version's 300 epochs. This is because the lung dataset converges faster and overtraining is more of a risk with the oversampled data.
+
+---
+
+### Step 13: Training Curves Are Plotted
+
+After training finishes, two side-by-side plots appear:
+
+- **Accuracy curve:** Training accuracy (blue) and validation accuracy (red) across all 50 epochs
+- **Loss curve:** Training loss (blue) and validation loss (red) across all 50 epochs
+
+Healthy training shows both curves declining together and eventually leveling off. If training accuracy keeps rising while validation accuracy plateaus or drops, that is overfitting.
+
+---
+
+### Step 14: Best Model Is Loaded and Evaluated
+
+The code loads `best_lung_model.h5` (the checkpoint with the highest validation accuracy during training) and runs it on the held-out test set. You will see:
+
+```
+Test Accuracy: 84.37%
+```
+
+This is the most honest measure of real-world performance. The number cannot be inflated by training choices because the test images were never seen during training or validation.
+
+---
+
+### Step 15: Confusion Matrix and Classification Report
+
+A confusion matrix is displayed as a color-coded grid. Then the classification report is printed. Read these together to understand where the model makes errors — see Section 10 for how to interpret these.
+
+---
+
+### Step 16: Attention Visualization on 3 Test Samples
+
+Three random images are selected from the test set. For each one, a **4-panel attention figure** is generated showing the original CT scan, edge attention overlay, spatial attention overlay, and Grad-CAM heatmap. See Section 11 for a detailed explanation of each panel.
+
+---
+
+### Step 17: Custom Image Upload (Interactive)
+
+The final step prompts you to upload your own CT scan image:
+
+```
+Please upload a CT Scan image for analysis...
+```
+
+A file picker dialog appears. Upload any grayscale CT lung scan image (`.jpg` or `.png`). The model will:
+
+1. Display the image with its predicted class and confidence percentage
+2. Generate the full 4-panel attention visualization for that image
+
+This is the interactive inference mode — useful for testing the model on new scans outside the original dataset.
+
+---
+
+## 5. How the Data Pipeline Works
+
+Understanding the data pipeline is important if you need to modify the code for a different dataset.
+
+**Step 1 — Path collection:** The code walks the data directory and collects file paths and integer labels into two Python lists. No images are loaded into memory at this stage.
+
+**Step 2 — Stratified split:** `sklearn.model_selection.train_test_split` with `stratify=labels` divides the paths and labels into train+val and test. This ensures each split has roughly the same class proportions as the full dataset.
+
+**Step 3 — Oversampling:** For the training split only, each class is resampled up to the size of the largest class using `numpy.random.choice` with `replace=True`. This means minority class images are repeated. The resulting list is shuffled.
+
+**Step 4 — tf.data.Dataset creation:** `create_dataset_from_paths` takes the path lists and creates a `tf.data.Dataset`. Images are loaded lazily (on demand) using `tf.io.read_file` and decoded with `tf.image.decode_jpeg`. They are resized to 256×256 inside the pipeline. This approach is memory-efficient: images are not all loaded at once.
+
+**Step 5 — Batching:** The datasets are batched just before being passed to `model.fit()`. Batching is done separately from dataset creation so that unbatched datasets can be used for visualization and individual sample iteration.
+
+---
+
+## 6. Core Terminology: Basic Level
+
+### CT Scan Slice
+
+Unlike the X-ray images in the knee arthritis project, this dataset uses CT (Computed Tomography) scan slices. A CT scan is a series of cross-sectional images taken at different depths through the body. Each slice is a 2D image showing the internal structure at that depth. Lung cancer detection systems typically work on individual 2D slices rather than the full 3D volume.
+
+### Three Classes Instead of Five
+
+The knee arthritis project had 5 ordered grades (0 through 4). This project has 3 unordered categories: Benign, Malignant, and Normal. There is no inherent ordering — Benign is not "between" Normal and Malignant. This is a **multi-class classification** problem, not an ordinal regression problem.
+
+### Class Imbalance
+
+Medical datasets almost always have more Normal samples than disease samples, because most people in a given scan cohort are healthy. If you train a model on unbalanced data without correction, it learns to predict "Normal" too often simply because that minimizes the loss. Oversampling addresses this by repeating minority class examples until all classes are equally represented in training.
+
+### Oversampling
+
+Oversampling is the process of duplicating samples from underrepresented classes. In this code, if Malignant has 200 training images and Normal has 600, the Malignant images are randomly sampled (with replacement, meaning repeats are allowed) until there are 600 of them. This does not add new information — the same images appear multiple times — but it rebalances the loss contribution across classes.
+
+### Stratified Split
+
+When splitting data into train, validation, and test sets, stratification ensures the class proportions stay consistent. For example, if the original dataset is 20% Malignant, then the train set, validation set, and test set will each also be approximately 20% Malignant. This is important for getting reliable performance estimates.
+
+### Epoch (50 here, not 300)
+
+One epoch means the model has processed every image in the training set once. This code uses 50 epochs — fewer than the knee arthritis version — because the lung dataset converges faster and more epochs would risk memorizing the oversampled duplicates.
+
+### Batch Size (16)
+
+During each training step, 16 images are processed simultaneously. The model's weights are updated after each batch. This is the same batch size as the knee arthritis project.
+
+### Adam Optimizer
+
+This version uses **Adam** (Adaptive Moment Estimation) rather than RMSProp. Adam combines the benefits of two other optimizers (AdaGrad and RMSProp) and is generally considered more robust for medical imaging tasks with noisy gradients.
+
+---
+
+## 7. Core Terminology: Intermediate Level
+
+### Same CNN Backbone
+
+The convolutional backbone is identical to the knee arthritis version: five stacked blocks of Conv2D + MaxPooling with filter counts 8 → 16 → 32 → 64 → 128. The final convolutional layer is named `last_conv_layer` specifically so Grad-CAM can target it.
+
+### Why Grayscale for CT Scans
+
+CT scans, like X-rays, are naturally grayscale (intensity represents tissue density). Loading images with `channels=1` is correct here. Color CT scans exist but are pseudo-colored for visualization purposes — the underlying data is single-channel. Using grayscale reduces the number of parameters in the first convolutional layer.
+
+### decode_jpeg vs. image_dataset_from_directory
+
+The knee arthritis version used the high-level `image_dataset_from_directory` function. This version uses a lower-level approach: `tf.io.read_file` followed by `tf.image.decode_jpeg`. This gives more control over the loading process and works better with the manual oversampling logic that requires direct access to file path lists.
+
+### Hard Sigmoid
+
+Inside the coordinate attention block, a `hard_sigmoid` activation is used (instead of standard sigmoid). Hard sigmoid is a piecewise linear approximation: `clip((x + 3) / 6, 0, 1)`. It is computationally cheaper than the exponential operation inside true sigmoid and produces similar results in attention mechanisms.
+
+### Sparse Categorical Crossentropy
+
+This is the same loss function as the knee arthritis project. Labels are integers (0, 1, 2) rather than one-hot vectors, so "sparse" categorical crossentropy is appropriate. It computes the negative log probability assigned to the correct class.
+
+### Model Checkpoint (saved as `best_lung_model.h5`)
+
+The `ModelCheckpoint` callback monitors validation accuracy after each epoch. Only when validation accuracy improves is the model saved. This means the final saved model represents the best generalization achieved during training, not necessarily the model from the final epoch.
+
+### Classification Report Metrics for 3 Classes
+
+The classification report prints precision, recall, and F1-score for each of the three classes individually, plus a macro average (unweighted mean across classes) and a weighted average (weighted by class sample size in the test set). For a balanced evaluation of a medical classifier, the **macro F1** is the most important single number, because it treats all three classes equally.
+
+---
+
+## 8. Core Terminology: Advanced Level — The EM-CSA Mechanism
+
+The EM-CSA block in this code is identical in structure to the knee arthritis version. The four-phase "Outline, Zoom, Align, Spotlight" sequence is applied in exactly the same way. What changes is the **context**: instead of looking for bone spurs and joint space narrowing in X-rays, the same mechanism is now identifying tumor boundaries, ground-glass opacities, and nodule textures in CT scan slices.
+
+### Phase 1: Edge Attention — "Outline"
+
+**Function: `edge_attention_block`**
+
+The Sobel filter finds intensity gradients. In a lung CT, these correspond to the edges of the lung lobes, the boundary between the lung parenchyma and any lesion, and the wall of the trachea and major airways. The edge attention mask amplifies these boundaries in the feature map before subsequent processing.
+
+The output of this phase is accessible by name (`attention_edge_out`) and is extracted for the visualization panel.
+
+### Phase 2: Multi-Scale Extraction — "Zoom"
+
+Two parallel convolutional branches process the edge-enhanced features:
+
+- The **3×3 branch** captures fine-grained details: small nodules, subtle density changes, micro-texture
+- The **7×7 branch** captures broader context: the overall shape and extent of a lesion, the position of a mass relative to the lung boundary
+
+For pulmonary imaging this is especially valuable because malignant lesions can range from tiny sub-centimeter nodules to large masses that occupy significant portions of the lung field.
+
+### Phase 3: Coordinate Attention — "Align"
+
+Height-wise and width-wise pooling produce spatial attention maps that encode position information. In CT scans, this helps the model learn that certain regions — the central airways, the pleural surface, specific lobar positions — are more diagnostically significant. The coordinate attention learns to weight these regions appropriately.
+
+### Phase 3.5: Adaptive Scale Fusion
+
+The 3×3 and 7×7 branches are fused using learned softmax weights. If a particular feature channel is more informative at fine scale (e.g., for detecting small nodule texture), the fusion weights will favor the 3×3 branch for that channel. If a channel is more informative at coarse scale (e.g., for detecting a large mass), the 7×7 branch receives more weight. This is learned automatically during training.
+
+### Phase 4: Spatial Attention — "Spotlight"
+
+Channel-wise average and max pooling are concatenated and passed through a 7×7 convolution with sigmoid activation. The resulting map highlights specific pixel-level regions in the fused feature map. This is the most direct answer to "where in this CT slice should the model look?" and is extracted for visualization as `attention_spatial_map`.
+
+### Grad-CAM in This Context
+
+Grad-CAM targets `last_conv_layer` (the 128-filter conv layer just before the EM-CSA block). The heatmap shows which regions most strongly activated the predicted class score. For Malignant predictions, hot regions should ideally overlap with the actual tumor location. This provides a sanity check: if the Grad-CAM highlights the background or irrelevant tissue rather than a visible lesion, the model may be using spurious correlations.
+
+---
+
+## 9. What Happens Inside `main()`: Step by Step
+
+When you call `main()`, the following sequence executes automatically:
+
+1. **Upload & unzip** — Prompts for zip upload, unzips to `lung_images/`, walks the directory to find the data root
+2. **Parse paths and labels** — Walks class folders, collects `.jpg`/`.png` file paths and integer labels
+3. **Train/val/test split** — Stratified split: 15% test, then 15% of remainder as validation
+4. **Oversample training set** — Balances all three classes to the count of the majority class
+5. **Create tf.data.Dataset objects** — Three lazy-loading datasets: `train_ds`, `val_ds`, `test_ds`
+6. **`visualize_samples`** — Displays 20 CT scan samples from the balanced training set
+7. **`plot_class_distribution`** — Bar chart confirming equal class counts after oversampling
+8. **`build_em_csa_model`** — Constructs the full model graph
+9. **`model.summary()`** — Prints layer-by-layer parameter table
+10. **`plot_model_architecture`** — Visual graph of model (requires Graphviz)
+11. **`model.compile`** — Sets Adam optimizer, sparse categorical crossentropy loss, accuracy metric
+12. **`model.fit`** — Trains for 50 epochs with ModelCheckpoint saving `best_lung_model.h5`
+13. **`plot_training_history`** — Accuracy and loss curves for train and validation
+14. **Load `best_lung_model.h5`** — Reloads the best checkpoint
+15. **`best_model.evaluate`** — Prints test loss and test accuracy
+16. **`plot_confusion_matrix_custom`** — Confusion matrix + classification report on test set
+17. **Attention visualization loop** — Calls `visualize_internal_attention_and_gradcam` on 3 random test samples
+18. **`predict_custom_image`** — Prompts for user image upload and runs full visualization
+
+---
+
+## 10. Evaluation and Reading the Results
+
+### Test Accuracy
+
+The headline number. Because the test set was never used during training or hyperparameter selection, this is the best estimate of how the model would perform on truly new scans. For the IQ-OTH/NCCD dataset, published results typically range from 80% to 95% depending on the architecture and preprocessing choices.
+
+### Confusion Matrix
+
+A 3×3 grid where rows represent the true class and columns represent the predicted class. The three diagonal cells show correct predictions. Pay particular attention to:
+
+- **Malignant misclassified as Benign:** This is the most clinically dangerous error type (a false negative for cancer)
+- **Normal misclassified as Malignant:** This is a false positive — causes unnecessary follow-up but is less dangerous than missing cancer
+- **Benign vs. Malignant confusion:** These two are the hardest to distinguish visually; expect this cell to have the most off-diagonal errors
+
+### Classification Report
+
+Three key metrics per class:
+
+- **Precision:** Of all the scans the model called Malignant, what fraction actually were? A low precision means many false alarms.
+- **Recall:** Of all the actually Malignant scans, what fraction did the model find? A low recall means the model is missing cancers.
+- **F1-score:** Harmonic mean of precision and recall. Use this as the single summary metric per class.
+
+For a cancer detection system, **recall for the Malignant class** is the most safety-critical metric. Missing a malignant scan is more dangerous than raising a false alarm.
+
+### Macro vs. Weighted Average
+
+- **Macro average:** Treats all three classes equally. Better for evaluating performance on rare classes.
+- **Weighted average:** Weights each class by how many test samples it has. Better for reflecting real-world class frequencies.
+
+---
+
+## 11. Visualization: The 4-Panel Attention Dashboard
+
+After evaluation, `visualize_internal_attention_and_gradcam` is called for 3 test samples and 1 custom uploaded image. Each call produces a 1×4 figure:
+
+**Panel 1 — Input CT Scan**
+The original 256×256 grayscale CT slice, displayed with the predicted class label and confidence percentage at the top. For example: `Input: Malignant / Conf: 91.3%`
+
+**Panel 2 — EM-CSA: Edge (Outline)**
+The original CT image with the edge attention mask from `attention_edge_out` overlaid in jet colormap (blue→red) at 50% transparency. Bright colors indicate where Sobel-detected boundaries were amplified. In a lung CT, you should see bright regions along the lung wall, any visible lesion boundary, and the mediastinal structures.
+
+**Panel 3 — EM-CSA: Spatial (Spotlight)**
+The spatial attention map from `attention_spatial_map` overlaid in inferno colormap (black→yellow) at 60% transparency. This shows the final pixel-level focus of the attention mechanism. For Malignant predictions, bright spots should cluster over the region of abnormal tissue.
+
+**Panel 4 — Grad-CAM (Final Decision)**
+A gradient-weighted activation map overlaid on the original image using the jet colormap. Red/yellow regions are the most influential areas for the final classification decision. This is the most direct answer to "what made the model predict this class?"
+
+Together, the four panels tell the diagnostic story: what edges were found (Panel 2), where the model focused (Panel 3), and what ultimately drove the decision (Panel 4).
+
+---
+
+## 12. Key Differences from the Knee Arthritis Version
+
+| Aspect | Knee Arthritis | Lung Cancer (This Project) |
+|---|---|---|
+| Dataset | Custom knee X-ray dataset | IQ-OTH/NCCD CT scan dataset |
+| Number of classes | 5 (ordered grades 0–4) | 3 (Benign, Malignant, Normal) |
+| Image modality | X-ray | CT scan slice |
+| Epochs | 300 | 50 |
+| Optimizer | RMSProp | Adam |
+| Data loading method | `image_dataset_from_directory` | Manual path collection + `tf.data` |
+| Class balancing | Not present | Oversampling to majority class count |
+| Splitting method | Single split | Two-stage stratified split |
+| Model saved as | `best_model.h5` | `best_lung_model.h5` |
+| Visualization panels | 4-panel (same structure) | 4-panel (same structure) |
+| EM-CSA block | Identical | Identical |
+
+The EM-CSA attention mechanism, the CNN backbone structure, and the visualization logic are fully shared between the two projects. The differences are entirely in the data pipeline, training configuration, and output classes.
+
+---
+
+## NOTE: Quick Reference: All Functions
+
+| Function | What It Does |
+|---|---|
+| `apply_sobel(x)` | Sobel edge detection on a tensor (registered for serialization) |
+| `split_features(x, h, w)` | Splits tensor along axis=1 into height and width halves |
+| `global_mean_pool(x)` | Channel-wise mean, keepdims=True |
+| `global_max_pool(x)` | Channel-wise max, keepdims=True |
+| `edge_attention_block(input_tensor)` | Phase 1 (Outline): edge-based feature emphasis |
+| `coordinate_attention_part(input_tensor, ratio)` | Phase 3 (Align): axis-aware spatial attention |
+| `spatial_attention_part(input_tensor)` | Phase 4 (Spotlight): pixel-level spotlight |
+| `em_csa_block(input_tensor, filters, ratio)` | Full EM-CSA block: all four phases + fusion |
+| `build_em_csa_model(input_shape, num_classes, use_dense_layers)` | Constructs the complete CNN with EM-CSA |
+| `make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index)` | Computes Grad-CAM heatmap |
+| `visualize_internal_attention_and_gradcam(model, img_path, image_size, class_names)` | 4-panel attention visualization |
+| `create_dataset_from_paths(file_paths, labels, image_size, num_classes)` | Builds lazy-loading `tf.data.Dataset` |
+| `visualize_samples(dataset, class_names, num_samples)` | Displays sample CT scan images in a grid |
+| `plot_class_distribution(dataset, class_names, title)` | Bar chart of class counts |
+| `plot_confusion_matrix_custom(model, dataset, class_names)` | Confusion matrix + classification report |
+| `plot_training_history(history, save_path)` | Accuracy and loss curves |
+| `plot_model_architecture(model, save_path)` | Visual graph of model layers |
+| `predict_custom_image(model, class_names, image_size)` | Upload and predict a single custom CT scan |
+| `main()` | Runs the complete pipeline end-to-end |
 
 ---
 
